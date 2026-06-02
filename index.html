@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#020608">
+<title>Slope Monitor — MQTT</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
+<style>
+:root{
+  --bg:#020608;--bg2:#060c12;--bg3:#0a1218;
+  --rim:rgba(180,220,255,0.06);--rim2:rgba(180,220,255,0.12);
+  --ink:#b4d4f0;--ink2:#4a6480;--ink3:#243040;
+  --acc:#00d4aa;--acc2:#0096ff;--warn:#ffb020;--danger:#ff4060;
+  --cr:#a87fff;--cp:#ff82c0;
+  --mono:'IBM Plex Mono',monospace;--sans:'Space Grotesk',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg)}
+body{
+  color:var(--ink);font-family:var(--sans);font-size:14px;overflow-x:hidden;
+  background-image:
+    linear-gradient(180deg,rgba(0,212,170,0.04) 0%,transparent 40%),
+    radial-gradient(ellipse 80% 40% at 50% 0%,rgba(0,150,255,0.08) 0%,transparent 70%);
+  padding-bottom:72px;
+}
+
+/* ── HEADER ── */
+.hdr{
+  position:sticky;top:0;z-index:300;
+  padding:max(12px,env(safe-area-inset-top)) 16px 12px;
+  display:flex;align-items:center;justify-content:space-between;
+  background:rgba(2,6,8,0.85);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border-bottom:1px solid var(--rim);
+}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-ico{
+  width:32px;height:32px;border-radius:8px;
+  background:linear-gradient(135deg,#003d3a,#00a898);
+  display:grid;place-items:center;
+  box-shadow:0 0 20px rgba(0,212,170,0.30);flex-shrink:0;
+}
+.logo-ico svg{width:16px;height:16px}
+.logo-txt{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:-.3px;color:#d4eeff;line-height:1.1}
+.logo-sub{font-size:9px;color:var(--ink2);letter-spacing:.6px;margin-top:2px}
+.hdr-right{display:flex;align-items:center;gap:8px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ink3);transition:background .3s;flex-shrink:0}
+.dot.on{background:var(--acc);box-shadow:0 0 8px var(--acc);animation:pulse 2s infinite}
+.dot.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(0,212,170,.7)}60%{box-shadow:0 0 0 8px rgba(0,212,170,0)}100%{box-shadow:0 0 0 0 rgba(0,212,170,0)}}
+.badge{
+  font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.7px;
+  padding:3px 10px;border-radius:99px;text-transform:uppercase;border:1px solid transparent;transition:all .25s;
+}
+.b-off{background:rgba(74,100,128,0.10);color:var(--ink2);border-color:rgba(74,100,128,0.20)}
+.b-on{background:rgba(0,212,170,0.10);color:var(--acc);border-color:rgba(0,212,170,0.25)}
+.b-rec{background:rgba(255,64,96,0.10);color:var(--danger);border-color:rgba(255,64,96,0.30);animation:blink .9s infinite}
+.b-warn{background:rgba(255,176,32,0.10);color:var(--warn);border-color:rgba(255,176,32,0.30)}
+.b-cal{background:rgba(168,127,255,0.10);color:var(--cr);border-color:rgba(168,127,255,0.30);animation:blink .7s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;top:70px;left:50%;transform:translateX(-50%) translateY(-8px);
+  z-index:600;padding:10px 18px;
+  background:rgba(6,12,18,0.96);border:1px solid var(--rim2);
+  border-radius:10px;font-size:11.5px;color:var(--ink);
+  pointer-events:none;opacity:0;transition:opacity .2s,transform .2s;
+  white-space:nowrap;max-width:calc(100vw - 28px);text-align:center;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.ok{border-color:rgba(0,212,170,0.35);color:var(--acc)}
+#toast.err{border-color:rgba(255,64,96,0.35);color:var(--danger)}
+#toast.warn{border-color:rgba(255,176,32,0.35);color:var(--warn)}
+
+/* ── PAGE SYSTEM ── */
+.page{display:none}.page.active{display:block}
+
+/* ── INFO BANNER ── */
+#infoBanner{
+  display:none;margin:10px 14px 0;padding:10px 14px;
+  background:rgba(255,64,96,0.06);border:1px solid rgba(255,64,96,0.20);
+  border-radius:10px;font-size:11px;color:var(--danger);line-height:1.5;
+}
+
+/* ── PANEL KONEKSI (collapsible) ── */
+#connPanel{
+  margin:12px 14px 0;
+  background:var(--bg2);border:1px solid var(--rim2);
+  border-radius:14px;overflow:hidden;
+}
+.conn-head{
+  padding:12px 16px;
+  display:flex;align-items:center;justify-content:space-between;
+  cursor:pointer;user-select:none;
+}
+.conn-head:active{background:rgba(255,255,255,0.02)}
+.conn-title{font-family:var(--mono);font-size:9px;letter-spacing:.9px;text-transform:uppercase;color:var(--acc2)}
+.conn-head-right{display:flex;align-items:center;gap:8px}
+.conn-arrow{font-size:11px;color:var(--ink3);transition:transform .2s}
+.conn-arrow.open{transform:rotate(180deg)}
+.conn-body{padding:14px 16px;display:none}
+.conn-body.open{display:block}
+.field-row{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.field-row:last-child{margin-bottom:0}
+.field-lbl{font-size:9px;color:var(--ink2);letter-spacing:.7px;text-transform:uppercase}
+.field-inp{
+  width:100%;padding:9px 12px;
+  background:var(--bg3);border:1px solid var(--rim2);border-radius:8px;
+  color:var(--ink);font-family:var(--mono);font-size:12px;
+  outline:none;transition:border-color .2s;
+}
+.field-inp:focus{border-color:rgba(0,212,170,0.40)}
+.field-inp::placeholder{color:var(--ink3)}
+.conn-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn-conn{
+  width:100%;margin-top:12px;padding:11px;
+  background:linear-gradient(150deg,#003d3a,#005a54);
+  color:var(--acc);border:1px solid rgba(0,212,170,0.30);
+  border-radius:10px;font-family:var(--sans);font-weight:700;font-size:13px;
+  cursor:pointer;letter-spacing:.3px;transition:transform .1s,opacity .2s;
+}
+.btn-conn:active{transform:scale(.97)}
+.btn-conn:disabled{opacity:.3;pointer-events:none}
+.conn-status{
+  margin-top:8px;padding:8px 12px;
+  background:var(--bg3);border-radius:8px;
+  font-family:var(--mono);font-size:10px;color:var(--ink2);
+  min-height:32px;line-height:1.5;word-break:break-all;
+}
+.conn-status.ok{color:var(--acc)}.conn-status.err{color:var(--danger)}
+
+/* ── KONTROL TOMBOL ── */
+.ctrl-row{
+  display:grid;grid-template-columns:1fr 1fr;gap:8px;
+  padding:10px 14px 0;
+}
+.btn{
+  padding:15px 10px;border-radius:12px;font-family:var(--sans);
+  font-weight:700;font-size:13px;cursor:pointer;border:1px solid transparent;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:transform .1s,opacity .2s;
+}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.25;pointer-events:none}
+.bi{font-size:15px;line-height:1}
+.bs{
+  background:linear-gradient(135deg,rgba(0,212,170,0.15),rgba(0,150,255,0.10));
+  color:var(--acc);border-color:rgba(0,212,170,0.30);
+}
+.be{
+  background:rgba(255,64,96,0.10);
+  color:var(--danger);border-color:rgba(255,64,96,0.25);
+}
+.btn-pwr{
+  width:calc(100% - 28px);margin:8px 14px 0;padding:13px;
+  background:rgba(255,64,96,0.06);color:rgba(255,64,96,0.5);
+  border:1px solid rgba(255,64,96,0.15);border-radius:10px;
+  font-family:var(--sans);font-weight:700;font-size:12px;cursor:pointer;
+  transition:all .2s;
+}
+.btn-pwr:not(:disabled){
+  color:var(--danger);border-color:rgba(255,64,96,0.30);
+  background:rgba(255,64,96,0.08);
+}
+.btn-pwr:active{transform:scale(.98)}
+.btn-pwr:disabled{opacity:.25;pointer-events:none}
+
+/* ── CONFIRM MODAL ── */
+#confirmModal{
+  display:none;position:fixed;inset:0;z-index:700;
+  background:rgba(2,6,8,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  align-items:flex-end;justify-content:center;
+  padding:0 0 max(16px,env(safe-area-inset-bottom));
+}
+#confirmModal.show{display:flex}
+.cfm-box{
+  background:var(--bg2);border:1px solid var(--rim2);border-radius:16px 16px 0 0;
+  width:100%;max-width:420px;padding:20px 18px 8px;
+}
+.cfm-title{font-size:15px;font-weight:700;color:#dde8ff;margin-bottom:6px}
+.cfm-msg{font-size:12px;color:var(--ink2);line-height:1.6;margin-bottom:16px}
+.cfm-btns{display:flex;gap:8px;padding-bottom:8px}
+.cfm-no{
+  flex:1;padding:14px;background:rgba(74,100,128,0.12);color:var(--ink2);
+  border:1px solid rgba(74,100,128,0.18);border-radius:10px;
+  font-family:var(--sans);font-weight:600;font-size:13px;cursor:pointer;
+}
+.cfm-yes{
+  flex:1;padding:14px;border-radius:10px;
+  font-family:var(--sans);font-weight:600;font-size:13px;cursor:pointer;border:1px solid transparent;
+}
+.cfm-yes.red{background:rgba(255,64,96,0.15);color:var(--danger);border-color:rgba(255,64,96,0.35)}
+.cfm-yes.grn{background:rgba(0,212,170,0.12);color:var(--acc);border-color:rgba(0,212,170,0.30)}
+
+/* ── LAST UPDATE BAR ── */
+#lastUpd{
+  margin:8px 14px 0;padding:8px 12px;
+  background:rgba(0,150,255,0.04);border:1px solid rgba(0,150,255,0.14);
+  border-radius:9px;font-family:var(--mono);font-size:9.5px;color:var(--ink2);
+  display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px;
+}
+#lastUpd.show{display:flex}
+#lastUpd span b{color:var(--acc2)}
+
+/* ── KARTU DATA ── */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:10px 14px 6px}
+.card{
+  background:var(--bg2);border:1px solid var(--rim);border-radius:12px;
+  padding:12px 6px 10px;text-align:center;transition:border-color .25s,background .25s;
+}
+.card.warn{border-color:rgba(255,176,32,0.35);background:rgba(255,176,32,0.04)}
+.clbl{font-size:8px;color:var(--ink2);text-transform:uppercase;letter-spacing:.9px;margin-bottom:5px}
+.cval{font-family:var(--mono);font-size:15px;font-weight:500;letter-spacing:-.3px;transition:color .2s}
+.cunt{font-size:8px;color:var(--ink3);margin-top:3px}
+#vx{color:var(--danger)}#vy{color:var(--acc2)}#vz{color:var(--acc)}
+#vr{color:var(--cr)}#vp{color:var(--cp)}#vt{color:#80deea}
+.card.warn .cval{color:var(--warn)!important}
+
+/* ── CHART ── */
+.sec{
+  display:flex;align-items:center;gap:8px;padding:12px 15px 5px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.9px;text-transform:uppercase;color:var(--ink2);
+}
+.sec-line{flex:1;height:1px;background:var(--rim)}
+.cbox{margin:0 14px 10px;background:var(--bg2);border:1px solid var(--rim);border-radius:14px;overflow:hidden}
+.cbox-top{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 0}
+.ctit{font-family:var(--mono);font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--ink2)}
+.chz{font-family:var(--mono);font-size:8.5px;color:var(--ink3);background:var(--bg3);padding:2px 8px;border-radius:6px;border:1px solid var(--rim)}
+.cleg{display:flex;gap:12px;padding:7px 14px 0}
+.leg{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9px;color:var(--ink2)}
+.ldot{width:18px;height:2px;border-radius:2px}
+.cwrap{height:150px;padding:6px 6px 0}
+
+/* ── STATISTIK ── */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:4px 14px 12px}
+.stat{background:var(--bg2);border:1px solid var(--rim);border-radius:10px;padding:9px 6px;text-align:center}
+.slbl{font-size:8px;color:var(--ink2);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px}
+.sval{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--acc)}
+
+/* ── STATUS BAR ── */
+.statusbar{
+  margin:4px 14px 0;padding:9px 14px;
+  background:var(--bg2);border:1px solid var(--rim);border-radius:10px;
+  font-family:var(--mono);font-size:10.5px;color:var(--ink2);min-height:36px;
+  display:flex;align-items:center;gap:8px;
+}
+.statusbar .s-dot{width:5px;height:5px;border-radius:50%;background:var(--ink3);flex-shrink:0}
+.statusbar.rec .s-dot{background:var(--danger);animation:blink .9s infinite}
+.statusbar.ok .s-dot{background:var(--acc)}
+
+/* ── BOTTOM NAV ── */
+.bottomnav{
+  position:fixed;bottom:0;left:0;right:0;z-index:400;
+  background:rgba(6,12,18,0.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-top:1px solid var(--rim);
+  display:grid;grid-template-columns:1fr 1fr 1fr;
+  padding:0 0 max(0px,env(safe-area-inset-bottom));
+}
+.nav-item{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:10px 0 8px;gap:3px;background:none;border:none;cursor:pointer;
+  font-family:var(--sans);font-size:8.5px;color:var(--ink2);letter-spacing:.4px;
+  transition:color .2s;
+}
+.nav-item.active{color:var(--acc)}
+.nav-ico{font-size:17px;line-height:1}
+.nav-center{display:flex;flex-direction:column;align-items:center;gap:1px;pointer-events:none}
+.nav-stat{font-family:var(--mono);font-size:8px;color:var(--ink3)}
+
+/* ═══ HALAMAN MQTT CONFIG ═══ */
+.mqtt-page{padding:0 0 12px}
+.mqtt-info{
+  margin:12px 14px 0;padding:12px 14px;
+  background:rgba(0,212,170,0.04);border:1px solid rgba(0,212,170,0.16);
+  border-radius:12px;font-size:10.5px;color:#80e8d0;line-height:1.8;
+}
+.mqtt-info b{color:var(--acc)}
+.mqtt-info code{
+  font-family:var(--mono);font-size:9.5px;
+  background:rgba(0,0,0,0.3);padding:1px 6px;border-radius:4px;color:#a0f0e0;
+}
+.mqtt-ctrl-hint{
+  margin:8px 14px 0;padding:10px 14px;
+  background:rgba(0,150,255,0.05);border:1px solid rgba(0,150,255,0.16);
+  border-radius:10px;font-family:var(--mono);font-size:9.5px;color:var(--ink2);line-height:1.7;
+}
+.mqtt-ctrl-hint b{color:var(--acc2)}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="logo">
+    <div class="logo-ico">
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polyline points="1,12 4,6 7,9 10,3 13,7 15,5" stroke="#00d4aa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="1" y1="14" x2="15" y2="14" stroke="#243040" stroke-width="1"/>
+      </svg>
+    </div>
+    <div>
+      <div class="logo-txt">SLOPE MONITOR</div>
+      <div class="logo-sub">MQTT CLOUD &middot; v8.0</div>
+    </div>
+  </div>
+  <div class="hdr-right">
+    <div class="dot" id="dot"></div>
+    <span id="badge" class="badge b-off">OFFLINE</span>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- CONFIRM MODAL -->
+<div id="confirmModal">
+  <div class="cfm-box">
+    <div class="cfm-title" id="cfmTitle">Konfirmasi</div>
+    <div class="cfm-msg" id="cfmMsg"></div>
+    <div class="cfm-btns">
+      <button class="cfm-no" onclick="document.getElementById('confirmModal').classList.remove('show')">Batal</button>
+      <button class="cfm-yes" id="cfmYes">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ PAGE: DASHBOARD ══════════ -->
+<div class="page active" id="pgDash">
+
+  <!-- Info banner saat merekam -->
+  <div id="infoBanner">&#128190; <b>Alat sedang merekam ke SD Card.</b> Halaman boleh ditutup — data tetap tersimpan.</div>
+
+  <!-- Panel koneksi (collapsible) -->
+  <div id="connPanel">
+    <div class="conn-head" onclick="toggleConn()">
+      <span class="conn-title">&#9881; Konfigurasi MQTT</span>
+      <div class="conn-head-right">
+        <span id="connBadge" class="badge b-off">TERPUTUS</span>
+        <span class="conn-arrow" id="connArrow">&#9660;</span>
+      </div>
+    </div>
+    <div class="conn-body open" id="connBody">
+      <div class="field-row">
+        <div class="field-lbl">Broker Host</div>
+        <input class="field-inp" id="fHost" type="text"
+          value="2ab77cd22e8b44249bd0a992de734f2e.s1.eu.hivemq.cloud"
+          placeholder="broker.hivemq.cloud">
+      </div>
+      <div class="conn-row">
+        <div class="field-row">
+          <div class="field-lbl">Port (WSS)</div>
+          <input class="field-inp" id="fPort" type="number" value="8884">
+        </div>
+        <div class="field-row">
+          <div class="field-lbl">Device ID</div>
+          <input class="field-inp" id="fDevice" type="text" value="slope-monitor-ebri-01">
+        </div>
+      </div>
+      <div class="conn-row">
+        <div class="field-row">
+          <div class="field-lbl">Username</div>
+          <input class="field-inp" id="fUser" type="text" value="skripsi">
+        </div>
+        <div class="field-row">
+          <div class="field-lbl">Password</div>
+          <input class="field-inp" id="fPass" type="password" value="Skripsi123">
+        </div>
+      </div>
+      <button class="btn-conn" id="btnConn" onclick="doConnect()">&#9654; Hubungkan</button>
+      <div class="conn-status" id="connStatus">Isi konfigurasi lalu tekan Hubungkan.</div>
+    </div>
+  </div>
+
+  <!-- Tombol MULAI / BERHENTI -->
+  <div class="ctrl-row">
+    <button class="btn bs" id="btnS" onclick="cmdStart()" disabled>
+      <span class="bi">&#9654;</span><span>Mulai</span>
+    </button>
+    <button class="btn be" id="btnE" onclick="cmdStop()" disabled>
+      <span class="bi">&#9632;</span><span>Berhenti</span>
+    </button>
+  </div>
+  <button class="btn-pwr" id="btnPwr" onclick="doPoweroff()" disabled>&#9889; MATIKAN ALAT</button>
+
+  <!-- Status bar -->
+  <div class="statusbar" id="statusBar" style="margin-top:8px">
+    <div class="s-dot"></div>
+    <span id="statusTxt">Menunggu koneksi MQTT...</span>
+  </div>
+
+  <!-- Last update -->
+  <div id="lastUpd">
+    <span>&#128336; Update: <b id="lastTime">-</b></span>
+    <span>&#128246; <b id="hzLive">-</b> Hz</span>
+    <span>&#128204; SD: <b id="rowLive">-</b> baris</span>
+  </div>
+
+  <!-- Kartu data -->
+  <div class="cards">
+    <div class="card" id="cx"><div class="clbl">Acc X</div><div class="cval" id="vx">-</div><div class="cunt">m/s²</div></div>
+    <div class="card" id="cy"><div class="clbl">Acc Y</div><div class="cval" id="vy">-</div><div class="cunt">m/s²</div></div>
+    <div class="card" id="cz"><div class="clbl">Acc Z</div><div class="cval" id="vz">-</div><div class="cunt">m/s²</div></div>
+    <div class="card" id="cr"><div class="clbl">Roll</div><div class="cval" id="vr">-</div><div class="cunt">deg</div></div>
+    <div class="card" id="cp"><div class="clbl">Pitch</div><div class="cval" id="vp">-</div><div class="cunt">deg</div></div>
+    <div class="card" id="ct"><div class="clbl">Suhu</div><div class="cval" id="vt">-</div><div class="cunt">°C</div></div>
+  </div>
+
+  <!-- Chart Akselerasi -->
+  <div class="sec">Percepatan Linear<div class="sec-line"></div></div>
+  <div class="cbox">
+    <div class="cbox-top"><div class="ctit">m/s²</div><div class="chz" id="hzBadge">- Hz</div></div>
+    <div class="cleg">
+      <div class="leg"><div class="ldot" style="background:var(--danger)"></div>X</div>
+      <div class="leg"><div class="ldot" style="background:var(--acc2)"></div>Y</div>
+      <div class="leg"><div class="ldot" style="background:var(--acc)"></div>Z</div>
+    </div>
+    <div class="cwrap"><canvas id="CA"></canvas></div>
+  </div>
+
+  <!-- Chart Kemiringan -->
+  <div class="sec">Kemiringan<div class="sec-line"></div></div>
+  <div class="cbox">
+    <div class="cbox-top"><div class="ctit">Roll &amp; Pitch (°)</div></div>
+    <div class="cleg">
+      <div class="leg"><div class="ldot" style="background:var(--cr)"></div>Roll</div>
+      <div class="leg"><div class="ldot" style="background:var(--cp)"></div>Pitch</div>
+    </div>
+    <div class="cwrap"><canvas id="CB"></canvas></div>
+  </div>
+
+  <!-- Statistik -->
+  <div class="stats">
+    <div class="stat"><div class="slbl">Waktu Rekam</div><div class="sval" id="sT">0.0s</div></div>
+    <div class="stat"><div class="slbl">Total Pesan</div><div class="sval" id="sMsgCount">0</div></div>
+    <div class="stat"><div class="slbl">Suhu Sensor</div><div class="sval" id="sSuhu">-°C</div></div>
+  </div>
+
+</div><!-- /pgDash -->
+
+<!-- ══════════ PAGE: MQTT INFO ══════════ -->
+<div class="page" id="pgMqtt">
+  <div class="mqtt-page">
+    <div class="mqtt-info">
+      <b>&#127760; Dashboard MQTT — Cara Pakai</b><br>
+      1. Pastikan ESP32 terhubung WiFi &amp; MQTT aktif (badge hijau di alat)<br>
+      2. Buka halaman ini dari HP manapun — jaringan berbeda OK<br>
+      3. Tekan <b>Hubungkan</b> di tab Dashboard<br>
+      4. Gunakan tombol <b>Mulai / Berhenti</b> untuk kontrol rekaman<br><br>
+      <b>&#128276; Topic MQTT:</b><br>
+      Data &nbsp;&nbsp;&nbsp;: <code>slope/&lt;device-id&gt;/data</code><br>
+      Perintah: <code>slope/&lt;device-id&gt;/cmd</code> &nbsp;(kirim <code>s</code> atau <code>e</code>)<br>
+      Status &nbsp;: <code>slope/&lt;device-id&gt;/status</code>
+    </div>
+    <div class="mqtt-ctrl-hint">
+      <b>Perintah yang diterima ESP32:</b><br>
+      <code>s</code> = Mulai merekam (sama dengan tekan START)<br>
+      <code>e</code> = Berhenti merekam (sama dengan tekan STOP)<br><br>
+      Port <code>8884</code> = WSS/TLS HiveMQ Cloud (browser)<br>
+      Port <code>8883</code> = TLS biasa (ESP32)
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class="bottomnav">
+  <button class="nav-item active" id="navDash" onclick="goPage('dash')">
+    <span class="nav-ico">&#128200;</span>Dashboard
+  </button>
+  <div class="nav-center">
+    <div style="display:flex;align-items:center;gap:5px">
+      <div class="dot" id="dot2"></div>
+    </div>
+    <div class="nav-stat">Hz: <span id="hzNav">-</span></div>
+    <div class="nav-stat"><span id="upLive">-</span>s</div>
+  </div>
+  <button class="nav-item" id="navMqtt" onclick="goPage('mqtt')">
+    <span class="nav-ico">&#128225;</span>Info MQTT
+  </button>
+</div>
+
+<script>
+// ================================================================
+//  CONFIG
+// ================================================================
+const MAXPTS = 120;
+const THR_XY = 0.30, THR_Z = 0.10, THR_R = 15, THR_P = 15;
+
+let mqttClient  = null;
+let mqttTopic   = '';
+let mqttTopicCmd = '';
+let mqttConnected = false;
+let running     = false;
+let msgCount    = 0;
+let fpsCount    = 0, lastFpsTs = Date.now();
+let staleTimer  = null;
+let uptimeSec   = 0;
+
+// ================================================================
+//  CHARTS
+// ================================================================
+function mkChart(id, sets, yLbl) {
+  return new Chart(document.getElementById(id), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: sets.map(([l, c]) => ({
+        label: l, data: [],
+        borderColor: c, backgroundColor: 'transparent',
+        borderWidth: 1.5, pointRadius: 0, tension: .25
+      }))
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#060c12', titleColor: '#b4d4f0', bodyColor: '#4a6480',
+          borderColor: 'rgba(180,220,255,0.08)', borderWidth: 1,
+          bodyFont: { family: 'IBM Plex Mono,monospace', size: 10 },
+          padding: 8, cornerRadius: 8,
+          callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(4) }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#243040', font: { size: 7.5 }, maxTicksLimit: 5, maxRotation: 0 }, grid: { color: 'rgba(180,220,255,0.03)' } },
+        y: {
+          ticks: { color: '#4a6480', font: { family: 'IBM Plex Mono,monospace', size: 8 }, maxTicksLimit: 5, callback: v => v.toFixed(2) },
+          grid: { color: 'rgba(180,220,255,0.04)' },
+          title: { display: true, text: yLbl, color: '#243040', font: { size: 8 } }
+        }
+      }
+    }
+  });
+}
+const cA = mkChart('CA', [['X','#ff4060'],['Y','#0096ff'],['Z','#00d4aa']], 'm/s²');
+const cB = mkChart('CB', [['Roll','#a87fff'],['Pitch','#ff82c0']], '°');
+
+function pushChart(ch, lbl, ...v) {
+  ch.data.labels.push(lbl);
+  v.forEach((x, i) => ch.data.datasets[i].data.push(x));
+  if (ch.data.labels.length > MAXPTS) {
+    ch.data.labels.shift();
+    ch.data.datasets.forEach(d => d.data.shift());
+  }
+  ch.update('none');
+}
+
+// ================================================================
+//  HELPERS
+// ================================================================
+let _tt = null;
+function toast(msg, type, dur) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show ' + (type || '');
+  if (_tt) clearTimeout(_tt);
+  _tt = setTimeout(() => { t.className = ''; }, dur || 3000);
+}
+function val(id, v)  { const e = document.getElementById(id); if (e) e.textContent = v; }
+function warn(id, on){ const e = document.getElementById(id); if (e) e.classList.toggle('warn', on); }
+function en(id, on)  { const e = document.getElementById(id); if (e) e.disabled = !on; }
+function dot(state)  {
+  ['dot','dot2'].forEach(d => {
+    const el = document.getElementById(d); if (!el) return;
+    el.className = 'dot' + (state==='on'?' on':state==='warn'?' warn':'');
+  });
+}
+function badge(t, c) { const b = document.getElementById('badge'); if(b){b.textContent=t;b.className='badge '+c;} }
+function connBadge(t,c){ const b = document.getElementById('connBadge'); if(b){b.textContent=t;b.className='badge '+c;} }
+function connStatus(msg,cls){ const e=document.getElementById('connStatus'); if(e){e.textContent=msg;e.className='conn-status '+(cls||'');} }
+function st(msg,cls){
+  const e = document.getElementById('statusBar');
+  if(e) e.className = 'statusbar '+(cls||'');
+  val('statusTxt', msg);
+}
+function confirm2(title, msg, yesLabel, yesClass, cb) {
+  document.getElementById('cfmTitle').textContent = title;
+  document.getElementById('cfmMsg').textContent = msg;
+  const yBtn = document.getElementById('cfmYes');
+  yBtn.textContent = yesLabel; yBtn.className = 'cfm-yes ' + yesClass;
+  yBtn.onclick = () => { document.getElementById('confirmModal').classList.remove('show'); cb(); };
+  document.getElementById('confirmModal').classList.add('show');
+}
+
+// ================================================================
+//  PAGE NAVIGATION
+// ================================================================
+let curPage = 'dash';
+function goPage(p) {
+  curPage = p;
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('pg' + p.charAt(0).toUpperCase() + p.slice(1)).classList.add('active');
+  const nb = document.getElementById('nav' + p.charAt(0).toUpperCase() + p.slice(1));
+  if (nb) nb.classList.add('active');
+}
+
+// ================================================================
+//  KONEKSI PANEL TOGGLE
+// ================================================================
+function toggleConn() {
+  const body  = document.getElementById('connBody');
+  const arrow = document.getElementById('connArrow');
+  const open  = body.classList.toggle('open');
+  arrow.classList.toggle('open', open);
+}
+
+// ================================================================
+//  MQTT CONNECT
+// ================================================================
+function doConnect() {
+  const host   = document.getElementById('fHost').value.trim();
+  const port   = parseInt(document.getElementById('fPort').value) || 8884;
+  const user   = document.getElementById('fUser').value.trim();
+  const pass   = document.getElementById('fPass').value;
+  const device = document.getElementById('fDevice').value.trim();
+
+  if (!host || !device) { toast('Host dan Device ID wajib diisi!', 'err'); return; }
+
+  if (mqttClient) {
+    try { mqttClient.end(true); } catch (e) {}
+    mqttClient = null; mqttConnected = false;
+  }
+
+  mqttTopic    = 'slope/' + device + '/data';
+  mqttTopicCmd = 'slope/' + device + '/cmd';
+
+  en('btnConn', false);
+  connStatus('Menghubungkan ke ' + host + ':' + port + '...', '');
+  connBadge('MENGHUBUNGKAN...', 'b-warn');
+  dot('warn'); badge('MENGHUBUNGKAN', 'b-warn');
+
+  const brokerUrl = 'wss://' + host + ':' + port + '/mqtt';
+  const opts = {
+    clientId: 'mqtt-dash-' + Math.random().toString(16).slice(2, 8),
+    username: user, password: pass,
+    clean: true, reconnectPeriod: 5000, connectTimeout: 10000,
+  };
+
+  try { mqttClient = mqtt.connect(brokerUrl, opts); }
+  catch (e) {
+    connStatus('Error: ' + e.message, 'err'); connBadge('ERROR', 'b-warn');
+    badge('ERROR', 'b-warn'); en('btnConn', true); return;
+  }
+
+  mqttClient.on('connect', () => {
+    mqttConnected = true;
+    connBadge('TERHUBUNG', 'b-on');
+    connStatus('✓ Terhubung | Data: ' + mqttTopic, 'ok');
+    badge('LIVE', 'b-on'); dot('on');
+    st('Terhubung — menunggu data dari ESP32...', 'ok');
+    en('btnConn', true);
+    document.getElementById('btnConn').textContent = '⟳ Hubungkan Ulang';
+    toast('MQTT terhubung!', 'ok');
+
+    // Subscribe data topic
+    mqttClient.subscribe(mqttTopic, { qos: 1 }, err => {
+      if (err) { toast('Gagal subscribe: ' + err.message, 'err'); return; }
+      connStatus('✓ Subscribe OK\nTopic: ' + mqttTopic, 'ok');
+    });
+
+    // Subscribe status topic untuk sync state
+    mqttClient.subscribe('slope/' + device + '/status', { qos: 1 });
+
+    // Aktifkan kontrol
+    en('btnS', !running);
+    en('btnE', running);
+    en('btnPwr', !running);
+
+    // Tutup panel koneksi setelah berhasil
+    const body = document.getElementById('connBody');
+    if (body.classList.contains('open')) toggleConn();
+  });
+
+  mqttClient.on('message', (t, payload) => {
+    if (t === mqttTopic) {
+      try { onData(JSON.parse(payload.toString())); }
+      catch(e){ console.warn('Bad JSON:', payload.toString()); }
+    } else if (t.endsWith('/status')) {
+      const s = payload.toString();
+      if (s === 'offline') {
+        badge('ALAT OFF', 'b-warn'); dot('warn');
+        st('ESP32 offline', '');
+        en('btnS', false); en('btnE', false); en('btnPwr', false);
+      }
+    }
+  });
+
+  mqttClient.on('error', err => {
+    connStatus('Error: ' + err.message, 'err');
+    connBadge('ERROR', 'b-warn'); badge('ERROR', 'b-warn'); dot('warn');
+    st('Koneksi error: ' + err.message, '');
+    en('btnConn', true);
+    disableControls();
+    toast('Koneksi error!', 'err');
+  });
+
+  mqttClient.on('close', () => {
+    mqttConnected = false;
+    connBadge('TERPUTUS', 'b-off'); badge('OFFLINE', 'b-off'); dot('');
+    st('MQTT terputus — mencoba ulang...', '');
+    disableControls();
+  });
+
+  mqttClient.on('reconnect', () => {
+    connBadge('MENGHUBUNGKAN...', 'b-warn'); dot('warn');
+    st('Menghubungkan ulang...', '');
+  });
+}
+
+function disableControls() {
+  en('btnS', false); en('btnE', false); en('btnPwr', false);
+}
+
+// ================================================================
+//  KIRIM PERINTAH VIA MQTT CMD TOPIC
+// ================================================================
+function publishCmd(cmd) {
+  if (!mqttClient || !mqttClient.connected) {
+    toast('MQTT belum terhubung!', 'err'); return false;
+  }
+  mqttClient.publish(mqttTopicCmd, cmd, { qos: 1 }, err => {
+    if (err) toast('Gagal kirim perintah!', 'err');
+  });
+  return true;
+}
+
+function cmdStart() {
+  confirm2(
+    'Mulai Merekam?',
+    'ESP32 akan mulai merekam data ke SD Card.',
+    'Mulai', 'grn',
+    () => {
+      if (!publishCmd('s')) return;
+      running = true;
+      en('btnS', false); en('btnE', true); en('btnPwr', false);
+      badge('● REC', 'b-rec');
+      document.getElementById('infoBanner').style.display = 'block';
+      st('Perintah START dikirim — menunggu konfirmasi ESP32...', 'rec');
+      toast('Perintah Mulai dikirim!', 'ok');
+    }
+  );
+}
+
+function cmdStop() {
+  confirm2(
+    'Hentikan Rekaman?',
+    'ESP32 akan berhenti merekam dan menutup file CSV.',
+    'Berhenti', 'red',
+    () => {
+      if (!publishCmd('e')) return;
+      running = false;
+      en('btnS', true); en('btnE', false); en('btnPwr', true);
+      badge('LIVE', 'b-on');
+      document.getElementById('infoBanner').style.display = 'none';
+      st('Perintah STOP dikirim — menunggu konfirmasi ESP32...', 'ok');
+      toast('Perintah Berhenti dikirim!', 'warn');
+    }
+  );
+}
+
+function doPoweroff() {
+  confirm2(
+    'Matikan ESP32?',
+    'Alat akan masuk deep sleep. Untuk menghidupkan kembali perlu reset/power.',
+    'Matikan', 'red',
+    () => {
+      // Poweroff lewat MQTT tidak didukung langsung — beritahu user
+      toast('Gunakan dashboard WebSocket lokal untuk matikan alat.', 'warn', 5000);
+      st('Matikan alat lewat dashboard lokal (http://192.168.x.x)', '');
+    }
+  );
+}
+
+// ================================================================
+//  DATA HANDLER
+// ================================================================
+function onData(d) {
+  msgCount++;
+  fpsCount++;
+  const now = Date.now();
+
+  // FPS counter
+  if (now - lastFpsTs >= 1000) {
+    const hz = fpsCount;
+    val('hzBadge', hz + ' Hz'); val('hzLive', hz); val('hzNav', hz);
+    fpsCount = 0; lastFpsTs = now;
+  }
+
+  // Last update bar
+  const lu = document.getElementById('lastUpd');
+  lu.classList.add('show');
+  val('lastTime', d.jam || new Date().toLocaleTimeString('id-ID'));
+  val('rowLive', d.rows !== undefined ? d.rows : '-');
+  val('sMsgCount', msgCount);
+
+  const ax = +d.ax, ay = +d.ay, az = +d.az;
+  const roll = +d.roll, pitch = +d.pitch, suhu = +d.suhu;
+  const t = (+d.t).toFixed(2);
+
+  val('vx', ax.toFixed(4)); val('vy', ay.toFixed(4)); val('vz', az.toFixed(4));
+  val('vr', roll.toFixed(2)); val('vp', pitch.toFixed(2)); val('vt', suhu.toFixed(1));
+  val('sT', t + 's'); val('sSuhu', suhu.toFixed(1) + '°C');
+
+  warn('cx', Math.abs(ax) > THR_XY); warn('cy', Math.abs(ay) > THR_XY);
+  warn('cz', Math.abs(az) > THR_Z);
+  warn('cr', Math.abs(roll) > THR_R); warn('cp', Math.abs(pitch) > THR_P);
+
+  pushChart(cA, t, ax, ay, az);
+  pushChart(cB, t, roll, pitch);
+
+  // Sync state rekaman dari data ESP32
+  const isRec = d.running === true || d.running === 'true';
+  if (isRec !== running) {
+    running = isRec;
+    en('btnS', !running); en('btnE', running); en('btnPwr', !running);
+  }
+  if (isRec) {
+    badge('● REC', 'b-rec');
+    document.getElementById('infoBanner').style.display = 'block';
+    st('ESP32 sedang merekam — ' + (d.rows || 0) + ' baris tersimpan di SD Card', 'rec');
+  } else {
+    badge('LIVE', 'b-on');
+    document.getElementById('infoBanner').style.display = 'none';
+    st('ESP32 terhubung — tidak sedang merekam', 'ok');
+  }
+
+  // Stale detection
+  if (staleTimer) clearTimeout(staleTimer);
+  staleTimer = setTimeout(() => {
+    st('Tidak ada data 10 detik — ESP32 mungkin tidak aktif', '');
+    badge('IDLE', 'b-warn'); dot('warn');
+  }, 10000);
+}
+
+// ================================================================
+//  UPTIME COUNTER
+// ================================================================
+setInterval(() => {
+  uptimeSec++;
+  val('upLive', uptimeSec);
+}, 1000);
+</script>
+</body>
+</html>
